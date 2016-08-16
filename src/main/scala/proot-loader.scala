@@ -2,6 +2,7 @@ package runtime
 
 import scala.io.Source
 import java.io.File
+import java.io.PrintWriter
 import utils.Status._
 import utils.Extractor._
 import utils.OCI._
@@ -9,16 +10,21 @@ import utils.JSONUtils._
 
 object PRootContainerLoader {
 
+    val rootfsName = "rootfs"
+    val scriptName = "launcher.sh"
+    
     def main(args: Array[String]) {
         if (args.length == 0) {
             println(INVALID_ARGUMENT)
         }
         else {
             val status = loadImage(args(0))
-            if (status.isBad)
+            if (status.isBad) {
                 println(status)
-            else
+            }
+            else {
                 note("---> image loaded.")
+            }
         }
     }
     
@@ -38,9 +44,16 @@ object PRootContainerLoader {
             case (badStatus, _, _)          => return badStatus
         }
         
-        // 3. We merge
-        note("- analyzing image")
+        // 3. We squash the image by merging the image layers
+        note("- squashing image")
         squashImage(directoryPath, manifestData.Layers) match {
+            case OK                         =>
+            case badStatus                  => return badStatus
+        }
+        
+        // 4. We prepare a bash script that will contain the required options for PRoot
+        note("- preparing launcher script")
+        generatePRootScript(directoryPath, Some(configData)) match {
             case OK                         =>
             case badStatus                  => return badStatus
         }
@@ -114,7 +127,6 @@ object PRootContainerLoader {
         return (OK, Some(manifestData), Some(configData))
     }
     
-    val rootfsName = "rootfs"
     
     /** Merge the layers by extracting them in order in a same directory.
       * Also, delete the whiteout files.
@@ -145,4 +157,139 @@ object PRootContainerLoader {
         return OK
     }
     
+    
+    val standardVarsFuncName = "prepareStandardVars"
+    val envFuncName = "prepareEnv"
+    val printCommandsFuncName = "printCommands"
+    val infoVolumesFuncName = "infoVolumes"
+    val infoPortsFuncName = "infoPorts"
+    val runPRootFuncName = "runPRoot"
+    val bashVarPrefix = "LOADER_"
+    val workdirBashVAR = bashVarPrefix + "WORKDIR"
+    val entryPointBashVar = bashVarPrefix + "ENTRYPOINT"
+    val cmdBashVar = bashVarPrefix + "CMD"
+    
+    def generatePRootScript(directory: String, configInit: Option[ConfigurationData]): Status = {
+        val config = configInit match {
+            case Some(conf) => conf
+            case None       => {
+                val (_, configData) = analyseImage(directory) match {
+                    case (OK, Some(d1), Some(d2))   => (d1, d2)
+                    case (badStatus, _, _)          => return badStatus
+                }
+                configData
+            }
+        }
+        
+        val scriptFile = new File(directory + "/" + scriptName)
+        val script = new PrintWriter(scriptFile)
+        val writeln = (s: String) => script.write(s + "\n")
+        val writelnln = (s: String) => script.write(s + "\n\n")
+        
+        writelnln("#!/usr/bin/env bash")
+        prepareFuncEnvVariables(List(
+            workdirBashVAR      + "=" + (if (config.WorkingDir.isEmpty) "/" else config.WorkingDir),
+            entryPointBashVar   + "=" + assembleCommandParts(config.Entrypoint),
+            cmdBashVar          + "=" + assembleCommandParts(config.Cmd)
+        ), standardVarsFuncName, writeln)
+        prepareFuncEnvVariables(config.Env, envFuncName, writeln)
+        prepareMapInfo(config.Volumes, "Data volumes", infoVolumesFuncName, writeln)
+        prepareMapInfo(config.ExposedPorts, "Exposed ports", infoPortsFuncName, writeln)
+        preparePRootCommand(writeln)
+        preparePrintCommands(writeln)
+        prepareCLI(writeln)
+        
+        script.close
+        scriptFile.setExecutable(true)
+        
+        return OK
+    }
+    
+    def prepareCLI(write: String => Unit) {
+        write("if (( \"$#\" < 1 )); then")
+            write("\t" + printCommandsFuncName)
+        write("elif [ \"$1\" = 'info' ]; then")
+            write("\tif [ \"$2\" = 'volumes' ]; then")
+                write("\t\t" + infoVolumesFuncName)
+            write("\telif [ \"$2\" = 'ports' ]; then")
+                write("\t\t" + infoPortsFuncName)
+            write("\telse")
+                write("\t\t" + infoVolumesFuncName)
+                write("\t\t" + infoPortsFuncName)
+            write("\tfi")
+        
+        write("elif [ \"$1\" = 'run' ]; then")
+            write("\tif (( \"$#\" < 3 )); then")
+                write("\t\t" + printCommandsFuncName)
+            write("else")
+                write("\t\t" + runPRootFuncName + " $2 $3 \"$4\" ${@:5} ")
+            write("\tfi")
+            
+        write("else")
+            write("\t" + printCommandsFuncName)
+        write("fi\n")
+    }
+        
+    def preparePRootCommand(write: String => Unit) {
+        write("function " + runPRootFuncName + " {")
+        write("\t" + envFuncName) // setting environment variables
+        write("\t" + standardVarsFuncName) // setting standard proot variables
+        write("\t" + assembleCommandParts(
+            "$1", // calling PRoot
+            "-R $2", // setting guest rootfs
+            "-w $" + workdirBashVAR, // setting working directory
+            "$3", // user additional PRoot options
+            "$" + entryPointBashVar,
+            "$" + cmdBashVar,
+            "${@:4}" // user inputs for the program
+        ))
+        write("}\n")
+    }
+    
+    def prepareFuncEnvVariables(args: List[String], functionName: String, write: String => Unit) {
+        write("function " + functionName + " {")
+        for(arg <- args)
+            write("\t" + arg)
+        write("}\n")
+    }
+        
+    def prepareMapInfo(map: Map[String, EmptyObject], title: String, functionName: String, write: String => Unit) {
+        write("function " + functionName + " {")
+        write("\techo \"" + title + ":\"")
+        for((variable, _) <- map)
+            write("\techo \"\t" + variable + "\"")
+        write("}\n")
+    }
+    
+    def preparePrintCommands(write: String => Unit) {
+        write("function " + printCommandsFuncName + " {")
+            write("\techo 'Commands:'")
+            write("\techo '\tinfo <arg1>'")
+            write("\techo '\t\tDisplay the data volumes or ports used the image.'")
+            write("\techo '\t\t<arg1>: nothing, volumes or ports'") 
+            write("\techo ''") 
+            write("\techo '\trun <arg1> <arg2> <arg3> <args...>'")
+            write("\techo '\t\tRun the image using PRoot.'")
+            write("\techo '\t\t<arg1>: \tpath to the PRoot binary'")
+            write("\techo '\t\t<arg2>: \tpath to the image root filesystem (rootfs)'")
+            write("\techo '\t\t<arg3>: \toptions for PRoot. See PRoot manual for more info.'")
+            write("\techo '\t\t\tWrap all of them with quotes (ex: \"-p 5432:5433 -p 8000:8001\").'")
+            write("\techo '\t\t<args...>: \targuments for the image program'")
+        write("}\n")
+    }
+    
+    
+    def assembleCommandParts(args:String*) = {
+        var command = ""
+        for (arg <- args)
+            command += arg + " "
+        command
+    }
+    
+    def assembleCommandParts(args: List[String]) = {
+        var command = ""
+        for (arg <- args)
+            command += arg + " "
+        command
+    }
 }

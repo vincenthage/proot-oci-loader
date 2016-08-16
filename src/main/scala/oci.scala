@@ -133,11 +133,9 @@ object OCI {
         if(Files.isDirectory(path)) {
             Files.walk(path).iterator()
                     .foreach(p => if(!p.equals(path)) deleteRecursively(p))
-            note("---- Deleting dir " + path)
             Files.deleteIfExists(path)
         }
         else {
-            note("---- Deleting file " + path)
             Files.deleteIfExists(path)
             }
     }
