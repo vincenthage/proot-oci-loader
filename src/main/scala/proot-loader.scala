@@ -187,12 +187,26 @@ object PRootContainerLoader {
         val writelnln = (s: String) => script.write(s + "\n\n")
         
         writelnln("#!/usr/bin/env bash")
-        prepareFuncEnvVariables(List(
-            workdirBashVAR      + "=" + (if (config.WorkingDir.isEmpty) "/" else config.WorkingDir),
-            entryPointBashVar   + "=" + assembleCommandParts(config.Entrypoint),
-            cmdBashVar          + "=" + assembleCommandParts(config.Cmd)
+        
+        val workDir = config.WorkingDir match {
+            case Some(s) if !s.isEmpty  => s
+            case _                      => "/"
+        }
+        val entryPoint = config.Entrypoint match {
+            case Some(list)             => assembleCommandParts(list)
+            case _                      => ""
+        }
+        val cmd = config.Cmd match {
+            case Some(list)             => assembleCommandParts(list)
+            case _                      => ""
+        }
+        prepareVariables(List(
+            workdirBashVAR      + "=" + workDir,
+            entryPointBashVar   + "=" + entryPoint,
+            cmdBashVar          + "=" + cmd
         ), standardVarsFuncName, writeln)
-        prepareFuncEnvVariables(config.Env, envFuncName, writeln)
+        
+        prepareEnvVariables(config.Env, envFuncName, writeln)
         prepareMapInfo(config.Volumes, "Data volumes", infoVolumesFuncName, writeln)
         prepareMapInfo(config.ExposedPorts, "Exposed ports", infoPortsFuncName, writeln)
         preparePRootCommand(writeln)
@@ -204,6 +218,9 @@ object PRootContainerLoader {
         
         return OK
     }
+    
+    //MYSQL_ROOT_PASSWORD=secret ./launcher.sh run ../../proot rootfs "-b ./data/mysql:/var/lib/mysql -b ./data/log:/var/log/mysql"
+    // MYSQL_ROOT_PASSWORD=secret ./launcher.sh run ../../proot rootfs "-b ./data2/mysql:/var/lib/mysql -b ./data2/log:/var/log/mysql -b ./data2/mysqld:/var/run/mysqld -p 3306:3308"
     
     def prepareCLI(write: String => Unit) {
         write("if (( \"$#\" < 1 )); then")
@@ -246,18 +263,35 @@ object PRootContainerLoader {
         write("}\n")
     }
     
-    def prepareFuncEnvVariables(args: List[String], functionName: String, write: String => Unit) {
+    def prepareVariables(args: List[String], functionName: String, write: String => Unit) {
         write("function " + functionName + " {")
         for(arg <- args)
-            write("\t" + arg)
+            write("\t" + addQuoteToRightSideOfEquality(arg))
         write("}\n")
     }
         
-    def prepareMapInfo(map: Map[String, EmptyObject], title: String, functionName: String, write: String => Unit) {
+    def prepareEnvVariables(maybeArgs: Option[List[String]], functionName: String, write: String => Unit) {
+        write("function " + functionName + " {")
+        maybeArgs match {
+            case Some(args)     => {
+                for(arg <- args)
+                    write("\texport " + addQuoteToRightSideOfEquality(arg))
+            }
+            case _              =>
+        }
+        write("}\n")
+    }
+        
+    def prepareMapInfo(maybeMap: Option[Map[String, EmptyObject]], title: String, functionName: String, write: String => Unit) {
         write("function " + functionName + " {")
         write("\techo \"" + title + ":\"")
-        for((variable, _) <- map)
-            write("\techo \"\t" + variable + "\"")
+        maybeMap match {
+            case Some(map)      => {
+                for((variable, _) <- map)
+                    write("\techo \"\t" + variable + "\"")
+                }
+            case _              =>
+        }
         write("}\n")
     }
     
@@ -291,5 +325,12 @@ object PRootContainerLoader {
         for (arg <- args)
             command += arg + " "
         command
+    }
+    
+    def addQuoteToRightSideOfEquality(s: String) = {
+        s.split('=') match {
+            case Array(left, right)  => left + "=\"" + right + "\""
+            case _              => s
+        }
     }
 }

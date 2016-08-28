@@ -26,13 +26,13 @@ object OCI {
         RepoTags: List[String]
         )
     case class ConfigurationData(
-        Cmd: List[String], 
-        Entrypoint: List[String], 
-        Env: List[String],
-        ExposedPorts: Map[String, EmptyObject],
-        User: String,
-        Volumes: Map[String, EmptyObject],
-        WorkingDir: String
+        Cmd: Option[List[String]], 
+        Entrypoint: Option[List[String]], 
+        Env: Option[List[String]],
+        ExposedPorts: Option[Map[String, EmptyObject]],
+        User: Option[String],
+        Volumes: Option[Map[String, EmptyObject]],
+        WorkingDir: Option[String]
         )
     
     //TODO: test
