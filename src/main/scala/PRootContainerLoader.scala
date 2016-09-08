@@ -255,10 +255,10 @@ object PRootContainerLoader {
             "$1", // calling PRoot
             "-R $2", // setting guest rootfs
             "-w $" + workdirBashVAR, // setting working directory
-            "$3", // user additional PRoot options
-            "$" + entryPointBashVar,
-            "$" + cmdBashVar,
-            "${@:4}" // user inputs for the program
+     //       "$3", // user additional PRoot options
+     //       "$" + entryPointBashVar,
+     //       "$" + cmdBashVar,
+            "${@:3}" // user inputs for the program
         ))
         write("}\n")
     }
